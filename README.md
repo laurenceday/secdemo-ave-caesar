@@ -1,4 +1,4 @@
-# roleproviders-ave-caesar
+# secdemos-ave-caesar
 
 Aave-flavoured demos for the draft ERC **Sealed Entity Credentials**:
 disclosure triggers over Aave protocol state, each paired with a
