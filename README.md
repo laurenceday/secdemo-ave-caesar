@@ -15,6 +15,7 @@ Those about to risk-manage salute you.
 | --- | --- | --- | --- |
 | [`aave-v3-kelp/`](./aave-v3-kelp/) | Risk service provider under a DAO reserve mandate | Realised loss: gross protocol deficit (Aave v3.3 native counter), incl. the Kelp rsETH backtest against real mainnet history | **Built + verified** |
 | [`aave-v4-spoke/`](./aave-v4-spoke/) | Spoke operator (hub→spoke credit lines) | Realised loss (per-spoke deficit) + guarded hub-sanction limb; consumer freezes new exposure only; incl. the spec-mandated [V4 codebase read](./aave-v4-spoke/docs/V4-READ.md) | **Built + verified** |
+| [`gho-facilitator/`](./gho-facilitator/) | GHO facilitator entity | Missed duty: offboarded (`capacity==0`) with undischarged outstanding GHO (`level>0`) sustained past a wind-down window; zero proxies; incl. the live [GhoToken read](./gho-facilitator/docs/GHO-READ.md) | **Built + verified** |
 | [`horizon-rwa/`](./horizon-rwa/) | RWA token issuer (Superstate USTB reference shape) | NAV drawdown + feed darkness (NAVLink-pinned, the deliberate oracle exception) + redemption liveness with capped pause carve-out; incl. the [live-contract read](./horizon-rwa/docs/HORIZON-READ.md) | **Built + verified** |
 
 Each demo directory is a self-contained Foundry project (vendored

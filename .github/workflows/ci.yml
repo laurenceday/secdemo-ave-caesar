@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        project: [aave-v3-kelp, aave-v4-spoke, horizon-rwa]
+        project: [aave-v3-kelp, aave-v4-spoke, horizon-rwa, gho-facilitator]
     defaults:
       run:
         working-directory: ${{ matrix.project }}
