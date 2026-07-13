@@ -181,10 +181,17 @@ calibration (`pauseCap`) and dry calibration (`capacityFloor`,
 
 ## Disclosure
 
-Superstate contracts (USTB, RedemptionIdle) are used here as the live
-reference subject. Per the build spec's disclosure rule, if Superstate —
-or any Robot Ventures portfolio company or Wildcat-investor-affiliated
-entity — is named as a pilot, reference subject, or design partner in
-the ERC or external demo materials, the investor relationship MUST be
-disclosed in the document itself. **[DISCLOSURE TO BE COMPLETED BY
-WILDCAT LABS BEFORE EXTERNAL USE.]**
+Superstate contracts (USTB, RedemptionIdle) are named in this demo solely
+as a **public reference subject** — used to verify live contract interfaces
+against mainnet. There is no pilot, design-partner, commercial, or
+investor relationship between Superstate and Wildcat Labs or its investors,
+and Superstate has not participated in or endorsed these materials.
+
+For completeness, and per the build spec's disclosure rule: Robot Ventures
+is an investor in **Wildcat Labs** (the author of the draft ERC). Robot
+Ventures is *not*, to Wildcat Labs' knowledge, an investor in Superstate,
+and Superstate is not a Robot Ventures portfolio company. The disclosure
+rule is reproduced here because it will bite if that changes: should
+Superstate later join a working group, become a design partner or pilot,
+or should any investor affiliation arise, this section MUST be updated
+before further external use.
