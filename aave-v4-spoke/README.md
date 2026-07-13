@@ -151,8 +151,12 @@ node script/compile_all.js && python3 script/runtime_check.py
   (whole-asset units, `type(uint40).max` = uncapped, fee receivers at
   zero), `reportDeficit`/`eliminateDeficit` flow and role gating,
   `AddSpoke`/`UpdateSpokeConfig` events, AccessManager role structure.
-  Not verified against the DEPLOYED mainnet instance — diff the deployed
-  Hub against this read before production binding.
+- Verified against the DEPLOYED mainnet instance (Core Hub
+  `0xCca8…26c9`, release 0.5.11 per the activation AIP): cap constant,
+  assetId lookup, `SpokeConfig` ABI layout with live values for the
+  Main/Lido/Kelp spokes, per-spoke deficit reads, and the Treasury
+  fee-receiver's zero-drawCap shape — see the addendum in
+  docs/V4-READ.md.
 
 ## Honest limits
 

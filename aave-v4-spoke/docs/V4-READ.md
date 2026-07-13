@@ -93,3 +93,26 @@ biases toward the subject.
 | Operator attribution | attested at issuance (no on-chain role) | registry-level |
 
 Nothing the trigger needs is events-only. No oracle enters the predicate.
+
+## Addendum: verified against the DEPLOYED mainnet instance (2026-07-13)
+
+The activation AIP (AaveV4Ethereum_ActivateV4Ethereum_20260319, deployed
+release 0.5.11) supplies the live addresses; every surface the trigger
+consumes was exercised by eth_call against the deployed Core Hub
+`0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9`:
+
+- `MAX_ALLOWED_SPOKE_CAP()` = 1099511627775 (`type(uint40).max`) — matches.
+- `getAssetId(WETH)` = 0; `getAssetUnderlyingAndDecimals(0)` round-trips
+  (WETH, 18) — matches.
+- `getSpokeConfig(0, spoke)` decodes exactly per the mirrored
+  `SpokeConfig` layout, with live values (WETH, whole-asset caps):
+  Main Spoke `0x94e7…c485` addCap 24000 / drawCap 2050; Lido Spoke
+  `0xe190…35Cd` drawCap 4800; **Kelp Spoke `0x3131…B9a4` drawCap 2500**;
+  all active, none halted.
+- `getSpokeDeficitRay(0, spoke)` = 0 for all of the above (young system).
+- Treasury Spoke `0xB9B0…3155` (the configured fee receiver) reads
+  **addCap = MAX, drawCap = 0** — the zero-line-by-construction shape
+  that motivates the trigger's `capEverPositive` guard, confirmed live.
+
+The uploaded codebase read above was `main`; the deployed tag is 0.5.11.
+No divergence was observed on any consumed surface.
