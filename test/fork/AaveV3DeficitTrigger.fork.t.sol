@@ -9,44 +9,49 @@ import {MockSealedRegistry} from "../mocks/Mocks.sol";
 /// @notice The Kelp backtest: replays the April 2026 KelpDAO rsETH bridge
 ///         exploit against the REAL Aave V3 mainnet Pool's deficit counter.
 ///
-///         "This credential, had it existed on 17 April, latches on 18 April
-///         with no human judgement involved."
+///         "This credential, had it existed on 17 April, latches the block
+///         the protocol books the loss — with no human judgement involved."
 ///
-///         The test forks mainnet at a block shortly before the exploit
-///         (2026-04-18 ~17:38 UTC per public reporting), binds a
+///         The test forks mainnet at a block before the exploit, binds a
 ///         WETH-denominated risk mandate, checkpoints (accumulator = 0: the
 ///         bind-time baseline swallows any pre-event deficit history), rolls
-///         the fork past the event's bad-debt liquidations, checkpoints
-///         again, and asserts the latch. A counter-credential with a
-///         threshold above the realised loss binds at the same pre-event
-///         block and does NOT latch — calibration matters in both directions.
+///         the fork past the bad-debt booking, checkpoints again, and
+///         asserts the latch. A counter-credential with a threshold above
+///         the realised loss binds at the same pre-event block and does NOT
+///         latch — calibration matters in both directions.
+///
+///         TIMELINE, VERIFIED ON-CHAIN (deficit_scan.py against an archive
+///         node, 2026-07-13): the exploit hit 18–19 April but mainnet core
+///         booked NO event deficit while the rsETH markets stayed frozen —
+///         Apr 17–28 shows only routine dust (<$2 across six reserves). The
+///         bad debt became protocol fact on 6 May 2026, 18:12:23 UTC, in a
+///         single transaction at block 25,037,701: two DeficitCreated events
+///         on the WETH reserve totalling 52,964.4395 WETH
+///         (tx 0xe2391ea418e16d70196ca3d77dfc836cca1096eebf65e423d52ad867b416478f).
+///         No WETH DeficitCovered has occurred as of verification. The
+///         credential therefore latches on 6 May — the block the protocol
+///         realises the loss — which is exactly what a realised-loss trigger
+///         should do: no oracle, no judgement, no latch on a frozen
+///         mark-to-market hole, a permanent latch the moment bad debt is
+///         burned into the reserve.
 ///
 ///         Skipped unless MAINNET_RPC_URL is set (needs an ARCHIVE node for
-///         April 2026 state). The default block numbers are timestamp
-///         ESTIMATES — pin the exact deficit-booking blocks with
-///         script/deficit_scan.py (DeficitCreated events on the Pool) and
-///         override via FORK_BLOCK_PRE / FORK_BLOCK_POST before treating a
-///         green run as the canonical backtest. If the WETH deficit was
-///         partially eliminated (Umbrella / DeFi United recapitalisation)
-///         before FORK_BLOCK_POST, the two-checkpoint gross UNDERSTATES the
-///         true gross — choose FORK_BLOCK_POST after the bookings but before
-///         eliminations for the full figure.
+///         April–May 2026 state).
 contract AaveV3DeficitTriggerKelpForkTest is Test {
-    // Aave V3 Ethereum core Pool (proxy) + WETH underlying. VERIFY against
-    // current address book before relying on a green run.
+    // Aave V3 Ethereum core Pool (proxy) + WETH underlying.
     address constant AAVE_V3_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
-    // Timestamp estimates for ~2026-04-17 (pre) and ~2026-04-27 (post).
-    // NOT verified block numbers — see the contract natspec.
-    uint256 constant DEFAULT_BLOCK_PRE = 24_530_000;
-    uint256 constant DEFAULT_BLOCK_POST = 24_600_000;
+    // Verified: first block at/after 2026-04-17T00:00:00Z (pre-exploit) and
+    // a block shortly after the 6 May deficit booking at block 25,037,701.
+    uint256 constant DEFAULT_BLOCK_PRE = 24_895_842;
+    uint256 constant DEFAULT_BLOCK_POST = 25_038_000;
 
-    // 1,000 WETH: far below the reported event loss (est. tens of thousands
-    // of WETH), comfortably above background deficit noise.
+    // 1,000 WETH: far below the verified event loss (52,964.4395 WETH),
+    // comfortably above background deficit noise.
     uint256 constant DEFAULT_THRESHOLD = 1_000e18;
-    // 200,000 WETH: far above any reported figure for the event — the
-    // counter-run credential must NOT latch.
+    // 200,000 WETH: far above the verified event loss — the counter-run
+    // credential must NOT latch.
     uint256 constant DEFAULT_THRESHOLD_HIGH = 200_000e18;
 
     bytes32 constant CRED = keccak256("kelp-mandate");

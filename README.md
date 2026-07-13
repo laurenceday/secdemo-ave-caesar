@@ -87,44 +87,53 @@ survives mandate expiry and stays latchable forever.
 
 ## The Kelp backtest
 
-`test/fork/AaveV3DeficitTrigger.fork.t.sol` replays the April 2026 KelpDAO
-rsETH bridge exploit (~116,500 rsETH drained via the LayerZero bridge
-18–19 April; public reporting put Aave's resulting bad-debt exposure in the
-$123M–$230M range, WETH being the principal borrowed reserve) against the
-real mainnet Pool:
+The April 2026 KelpDAO rsETH bridge exploit (~116,500 rsETH drained via the
+LayerZero bridge 18–19 April; public reporting put Aave's bad-debt exposure
+in the $123M–$230M range) replayed against the real mainnet Pool's deficit
+counter.
 
-1. Fork at a block shortly before the event; bind a WETH mandate with a
-   1,000 WETH threshold; checkpoint — accumulator is exactly zero (the
-   bind-time baseline swallows all prior deficit history); the provider
+**The verified on-chain timeline** (established with `deficit_scan.py`
+against an archive node, 2026-07-13) is more interesting than the headline:
+mainnet core booked **no** event deficit while the rsETH markets stayed
+frozen — the Apr 17–28 window shows only routine dust (<$2 across six
+reserves, and none of it WETH). The bad debt became protocol fact on
+**6 May 2026, 18:12:23 UTC** (block 25,037,701), when a single transaction
+(`0xe2391e…6478f`) burned two positions' outstanding debt into the WETH
+reserve deficit: **52,964.4395 WETH**. No WETH `DeficitCovered` has
+occurred as of verification — the deficit still stands.
+
+That is the honest shape of a realised-loss trigger, and the demo says so:
+it does not latch on a mark-to-market hole, an oracle print, or a frozen
+market's implied insolvency. It latches the block the protocol admits the
+loss — three weeks after the exploit, with no human judgement in the latch
+path.
+
+1. Bind a WETH mandate (1,000 WETH threshold) at 17 April state; checkpoint
+   — accumulator exactly zero (the baseline swallows history); provider
    grants.
-2. `rollFork` past the event's bad-debt liquidations; checkpoint; the gross
-   accumulator clears threshold; the grant is already dead (gates read
-   projections); a random watcher latches. *This credential, had it existed
-   on 17 April, latches on 18 April with no human judgement involved.*
-3. The counter-run: a second credential bound at the same pre-event block
-   with a 200,000 WETH threshold observes the same gross figure and does
-   **not** latch — calibration matters in both directions.
+2. Advance past block 25,037,701; checkpoint — gross = 52,964.4395 WETH;
+   grant already dead (gates read projections); a random watcher latches.
+3. Counter-run: a credential bound at the same pre-event block with a
+   200,000 WETH threshold observes the same gross and does **not** latch —
+   calibration matters in both directions.
+
+Two executable forms:
 
 ```bash
+# forge (canonical): fork PRE=24,895,842 → rollFork POST=25,038,000
 MAINNET_RPC_URL=<archive node> forge test --match-path "test/fork/**" -vvv
-# override once verified: FORK_BLOCK_PRE / FORK_BLOCK_POST / KELP_THRESHOLD /
-#                         KELP_THRESHOLD_HIGH / KELP_RESERVE
+
+# foundry-less: reads the REAL deficits at both blocks over RPC and replays
+# them through the compiled trigger/provider bytecode on py-evm
+MAINNET_RPC_URL=<archive node> python3 script/kelp_backtest.py
 ```
 
-The default block numbers (24,530,000 / 24,600,000) are timestamp
-**estimates, not verified event blocks**. Before treating a green run as
-the canonical backtest, pin the real bookings:
-
-```bash
-python3 script/deficit_scan.py --rpc $MAINNET_RPC_URL --find-block 2026-04-17T00:00:00Z
-python3 script/deficit_scan.py --rpc $MAINNET_RPC_URL --from-block <pre> --to-block <post>
-```
-
-The scanner lists every `DeficitCreated`/`DeficitCovered` on the Pool with
-per-asset gross totals. Choose `FORK_BLOCK_POST` after the bookings and —
-for the full gross figure — before any coverage events: the two-checkpoint
-replay understates gross if eliminations land between the checkpoints,
-which is itself the poke-cadence caveat made visible.
+`script/deficit_scan.py` reproduces the verification itself: `--find-block`
+binary-searches a timestamp to a block; range mode lists every
+`DeficitCreated`/`DeficitCovered` on the Pool with per-asset gross totals.
+If future coverage events land, keep `FORK_BLOCK_POST` before them — the
+two-checkpoint replay understates gross if an elimination falls between
+checkpoints, which is the poke-cadence caveat made visible.
 
 ## Running the tests
 
@@ -170,13 +179,17 @@ node script/compile_all.js && python3 script/runtime_check.py
 ## Verification status (as shipped)
 
 - Executed: all sources compile clean under solc 0.8.24 (solc-js); the
-  py-evm runtime harness passes 30/30 checks covering the flows above.
-  The forge suites are written to the same house style as the sibling
-  repos but were NOT executed in the build environment (no GitHub egress
-  for the foundry toolchain) — CI runs them on push.
-- Not executed: the fork backtest (needs an archive RPC with April 2026
-  state). Its default blocks are estimates; pin them with
-  `script/deficit_scan.py` before the first canonical run.
+  py-evm runtime harness passes 30/30 checks covering the flows above; the
+  Kelp backtest (`kelp_backtest.py`) passes 11/11 against real archive
+  state — real WETH deficits at blocks 24,895,842 and 25,038,000 through
+  the real compiled trigger. The forge suites are written to the same
+  house style as the sibling repos but were NOT executed in the build
+  environment (no GitHub egress for the foundry toolchain) — CI runs them
+  on push; the forge fork test replays the same verified blocks.
+- Verified on-chain (archive node, 2026-07-13): WETH reserve deficit 0 at
+  block 24,895,842 (2026-04-17); 52,964.4395 WETH from block 25,037,701
+  (2026-05-06 18:12:23 UTC, two DeficitCreated events, one transaction);
+  no WETH DeficitCovered through block 25,523,564.
 - Verified against aave-dao/aave-v3-origin (July 2026):
   `getReserveDeficit(address) returns (uint256)`; deficit incremented in
   underlying debt-asset units (`debtReserve.deficit += outstandingDebt` in
