@@ -1,6 +1,6 @@
 # cross-venue-portability
 
-Part of the `roleproviders-ave-caesar` demo suite — run all commands below
+Part of the `secdemo-ave-caesar` demo suite — run all commands below
 from this directory.
 
 The closing demo, and the actual pitch of the ERC: **reusable KYB + a
