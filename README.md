@@ -17,6 +17,7 @@ Those about to risk-manage salute you.
 | [`aave-v4-spoke/`](./aave-v4-spoke/) | Spoke operator (hub→spoke credit lines) | Realised loss (per-spoke deficit) + guarded hub-sanction limb; consumer freezes new exposure only; incl. the spec-mandated [V4 codebase read](./aave-v4-spoke/docs/V4-READ.md) | **Built + verified** |
 | [`gho-facilitator/`](./gho-facilitator/) | GHO facilitator entity | Missed duty: offboarded (`capacity==0`) with undischarged outstanding GHO (`level>0`) sustained past a wind-down window; zero proxies; incl. the live [GhoToken read](./gho-facilitator/docs/GHO-READ.md) | **Built + verified** |
 | [`horizon-rwa/`](./horizon-rwa/) | RWA token issuer (Superstate USTB reference shape) | NAV drawdown + feed darkness (NAVLink-pinned, the deliberate oracle exception) + redemption liveness with capped pause carve-out; incl. the [live-contract read](./horizon-rwa/docs/HORIZON-READ.md) | **Built + verified** |
+| [`cross-venue-portability/`](./cross-venue-portability/) | A single borrower/issuer entity active in two venues | **The thesis demo:** reusable KYB + shared consequence surface — one credential, `WILDCAT_DELINQ_V1` + `AAVE_V3_GROSS_DEFICIT_V1` OR-composed; a latch in either venue is visible to both | **Built + verified** |
 
 Each demo directory is a self-contained Foundry project (vendored
 `forge-std`, own README, unit + fork suites) plus a solc-js/py-evm harness
