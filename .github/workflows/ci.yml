@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge build --sizes
+      - run: forge test --no-match-path "test/fork/**" -vvv
+
+  fork:
+    # Activates when the repo has MAINNET_RPC_URL in secrets and
+    # RUN_FORK_TESTS=true in variables. Needs an archive node with
+    # April 2026 state; see the fork test's natspec for block pinning.
+    if: ${{ vars.RUN_FORK_TESTS == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: forge test --match-path "test/fork/**" -vvv
+        # Add FORK_BLOCK_PRE / FORK_BLOCK_POST repo variables here once the
+        # exact event blocks are pinned (an empty env var would override the
+        # in-test defaults with an unparseable value).
+        env:
+          MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
