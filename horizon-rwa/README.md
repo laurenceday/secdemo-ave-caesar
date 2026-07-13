@@ -45,11 +45,21 @@ one. That rationale is stated verbatim in the contract natspec because
 it is the exception's boundary: a consumer that does not already trust
 the pinned feed should not accept this class.
 
-- **Drawdown limb:** HWM ratchets up at fresh in-window checkpoints;
-  drawdown is integer bps of HWM with floor rounding (biases toward the
-  subject); the maximum *observed* drawdown ratchets up and never cures —
-  a NAV print at threshold is a permanent fact even if NAV fully
-  recovers before anyone latches. Decimals cancel out of the ratio;
+- **Drawdown limb, with confirmation:** HWM ratchets up at fresh
+  in-window checkpoints; drawdown is integer bps of HWM with floor
+  rounding (biases toward the subject). A threshold breach does not latch
+  on a single print — NAV is a *reported* figure and a lone misprint must
+  not become a permanent fact. A breach **arms**, recording the feed
+  round (`updatedAt`) that armed it, and is **confirmed** only by a
+  second, *distinct* fresh round — `updatedAt` strictly greater than the
+  arming round and at least `confirmationWindow` seconds later **in the
+  feed's own clock** (not the observer's: a watcher cannot confirm early
+  by waiting, and re-checkpointing the same round never confirms). A
+  fresh round back above threshold before confirmation **clears** the arm
+  (corrected misprint / genuine recovery). Once *confirmed*, the fact is
+  permanent — recovery, revision, or a new all-time high cannot cure it.
+  An issuer who silences the feed to avoid printing the second round
+  walks into the darkness limb instead. Decimals cancel out of the ratio;
   they are recorded in binding data for reference only.
 - **Darkness limb:** a checkpoint that finds the feed stale (`updatedAt`
   older than `stalenessBound`, or a non-positive answer) records nothing
@@ -117,13 +127,17 @@ node script/compile_all.js && python3 script/runtime_check.py
 
 - NAV trigger: attestor-only one-shot mandate (degenerate mandates
   rejected, decimals recorded); HWM baselines at first fresh in-window
-  checkpoint and ratchets up only; exact floor-rounded bps math with an
-  inclusive threshold; an observed drawdown survives full recovery and
-  still latches; an unobserved dip is missed (poke-cadence caveat,
-  documented); out-of-window prints attribute nothing; darkness
-  arms/clears/latches, a live-recovered feed cannot be projected dark,
-  and darkness is capped at `mandateEnd`; latch materialises its own
-  checkpoint; permanence; `binding()` round-trips.
+  checkpoint and ratchets up only; exact floor-rounded bps math; a single
+  breach round only *arms* (cannot latch alone); confirmation needs a
+  second distinct round `confirmationWindow` apart in the feed's clock;
+  the same round re-observed never confirms (feed-clock, not
+  observer-clock); a corrected misprint clears the arm; a *confirmed*
+  drawdown survives full recovery and still latches; silencing the feed
+  to dodge confirmation walks into the darkness limb; an unobserved dip
+  is missed (poke-cadence caveat); out-of-window prints attribute
+  nothing; darkness arms/clears/latches, a live-recovered feed cannot be
+  projected dark, and darkness is capped at `mandateEnd`; latch
+  materialises its own checkpoint; permanence; `binding()` round-trips.
 - Liveness trigger: dry arms below floor and self-clears on health; dry
   past the bound latches; the pause carve-out excuses the dry clock but
   is itself capped; the pause/dry alternation game cannot reset either
@@ -137,7 +151,7 @@ node script/compile_all.js && python3 script/runtime_check.py
 ## Verification status (as shipped)
 
 - Executed: all sources compile clean under solc 0.8.24 (solc-js); the
-  py-evm runtime harness passes 32/32 checks covering everything above.
+  py-evm runtime harness passes 37/37 checks covering everything above.
   The forge suites are written to the same house style as the sibling
   projects but were NOT executed in the build environment (no GitHub
   egress for the foundry toolchain) — CI runs them on push.

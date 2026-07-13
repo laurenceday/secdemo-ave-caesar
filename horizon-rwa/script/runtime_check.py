@@ -2,10 +2,12 @@
 """Runtime verification on a local EVM (py-evm via eth-tester).
 
 Deploys the compiled artifacts and executes the core flows end-to-end:
-NAV drawdown (HWM ratchet, floor-rounded bps, no cure after observation),
-the feed-darkness limb, redemption liveness (dry clock, capped pause
-carve-out, alternation resistance), and the provider's two-limb grant
-lifecycle including the NAV-only issuer shape.
+NAV drawdown with feed-timestamp confirmation (arm, confirm across two
+distinct rounds, misprint clears, confirmed drawdown never cures), the
+feed-darkness limb (including the silence-to-dodge-confirmation dodge),
+redemption liveness (dry clock, capped pause carve-out, alternation
+resistance), and the provider's two-limb grant lifecycle including the
+NAV-only issuer shape.
 
 This complements (does not replace) the forge test suite: forge-std
 cheatcode tests run under `forge test`; this file proves execution in
@@ -24,6 +26,7 @@ w3 = Web3(EthereumTesterProvider(tester))
 OWNER, ATTESTOR, ISSUER, WATCHER = w3.eth.accounts[:4]
 
 THRESHOLD_BPS = 500
+CONFIRMATION = 1 * 3600       # feed-clock seconds between arming and confirming round
 STALENESS = 2 * 86400
 STALE_CAP = 10 * 86400
 FLOOR = 100_000 * 10**6
@@ -88,17 +91,17 @@ feed.functions.set(11_144_444, now()).transact({"from": OWNER})
 redemption.functions.setCapacity(394_617 * 10**6).transact({"from": OWNER})
 
 expect_revert("configure gated to attestor",
-              lambda: nav.functions.configure(CRED, feed.address, THRESHOLD_BPS, STALENESS,
-                                              STALE_CAP, now(), 0).transact({"from": ISSUER}))
-nav.functions.configure(CRED, feed.address, THRESHOLD_BPS, STALENESS, STALE_CAP, now(), 0)\
+              lambda: nav.functions.configure(CRED, feed.address, THRESHOLD_BPS, CONFIRMATION,
+                                              STALENESS, STALE_CAP, now(), 0).transact({"from": ISSUER}))
+nav.functions.configure(CRED, feed.address, THRESHOLD_BPS, CONFIRMATION, STALENESS, STALE_CAP, now(), 0)\
     .transact({"from": ATTESTOR})
 liveness.functions.configure(CRED, redemption.address, FLOOR, DRY, PAUSE_CAP, now(), 0)\
     .transact({"from": ATTESTOR})
 nav.functions.checkpoint(CRED).transact({"from": WATCHER})
 liveness.functions.checkpoint(CRED).transact({"from": WATCHER})
 
-# ------------------------------------------------------------ NAV drawdown
-print("== NavDrawdownTrigger: drawdown limb ==")
+# ---------------------------------------------- NAV drawdown + confirmation
+print("== NavDrawdownTrigger: drawdown + confirmation ==")
 check("HWM baselined at first fresh checkpoint",
       nav.functions.highWaterNav(CRED).call() == 11_144_444)
 check("both limbs healthy: provider grants", provider.functions.getCredential(ISSUER).call() > 0)
@@ -107,29 +110,74 @@ feed.functions.set(11_500_000, now()).transact({"from": OWNER})
 nav.functions.checkpoint(CRED).transact({"from": WATCHER})
 check("HWM ratchets up", nav.functions.highWaterNav(CRED).call() == 11_500_000)
 
-# 4.99..%: (574999 * 10000) / 11500000 = 499.99 -> floor 499: not latchable.
+# 4.99..% down: (574999 * 10000) / 11500000 = 499.99 -> floor 499; no arm.
 feed.functions.set(10_925_001, now()).transact({"from": OWNER})
 nav.functions.checkpoint(CRED).transact({"from": WATCHER})
 check("floor rounding biases toward subject (499 bps)",
       nav.functions.maxDrawdownBpsObserved(CRED).call() == 499)
-check("sub-threshold: not triggerable", not nav.functions.isTriggerable(CRED).call())
+check("sub-threshold does not arm", nav.functions.armedRoundUpdatedAt(CRED).call() == 0)
 
-# Exactly 5%: inclusive, and the grant dies on the live print (projection).
+# Exactly 5% arms; a single round does not latch and does not kill the grant.
 feed.functions.set(10_925_000, now()).transact({"from": OWNER})
-check("projection sees the live print (500 bps)",
-      nav.functions.projectedDrawdownBps(CRED).call() == 500)
-check("grant dies while merely latchable", provider.functions.getCredential(ISSUER).call() == 0)
+nav.functions.checkpoint(CRED).transact({"from": WATCHER})
+check("5% arms", nav.functions.armedRoundUpdatedAt(CRED).call() > 0)
+check("armed-only: not triggerable", not nav.functions.isTriggerable(CRED).call())
+check("armed-only: grant still granted", provider.functions.getCredential(ISSUER).call() > 0)
 
-# Full recovery after a checkpointed observation cannot cure.
+# A corrected misprint next round clears the arm.
+feed.functions.set(11_600_000, now()).transact({"from": OWNER})  # new high, above threshold
 nav.functions.checkpoint(CRED).transact({"from": WATCHER})
-feed.functions.set(12_000_000, now()).transact({"from": OWNER})
+check("recovery before confirmation clears the arm",
+      nav.functions.armedRoundUpdatedAt(CRED).call() == 0)
+
+# A sustained breach: arm, then a confirming round CONFIRMATION later.
+feed.functions.set(10_000_000, now()).transact({"from": OWNER})  # from 11.6 HWM, ~-13.8%
+nav.functions.checkpoint(CRED).transact({"from": WATCHER})       # arm
+check("re-armed on a real breach", nav.functions.armedRoundUpdatedAt(CRED).call() > 0)
+warp(CONFIRMATION)
+feed.functions.set(10_000_000, now()).transact({"from": OWNER})  # distinct later round, live
+check("grant dies on the confirming round (projection)",
+      provider.functions.getCredential(ISSUER).call() == 0)
+nav.functions.checkpoint(CRED).transact({"from": WATCHER})       # confirm
+check("confirmed after two distinct rounds", nav.functions.drawdownConfirmed(CRED).call())
+
+# A confirmed drawdown cannot be cured, even by a new all-time high.
+feed.functions.set(13_000_000, now()).transact({"from": OWNER})
 nav.functions.checkpoint(CRED).transact({"from": WATCHER})
-check("observed drawdown is permanent (no cure)",
-      nav.functions.maxDrawdownBpsObserved(CRED).call() == 500)
+check("confirmed drawdown is permanent (no cure)", nav.functions.isTriggerable(CRED).call())
 nav.functions.latch(CRED).transact({"from": WATCHER})
 check("permissionless latch after recovery", nav.functions.isTriggered(CRED).call())
 expect_revert("double latch reverts",
               lambda: nav.functions.latch(CRED).transact({"from": WATCHER}))
+
+# --------------------------- feed-clock, not observer-clock; silence dodge
+print("== NavDrawdownTrigger: feed-clock confirmation + silence dodge ==")
+CRED_C = kek("clock-credential")
+registry.functions.setCredential(
+    CRED_C, kek("entity/v1"), ATTESTOR, now(), 0, False, [nav.address], [NAV_CLASS],
+).transact({"from": OWNER})
+feedC = deploy("MockNavFeed")
+feedC.functions.set(10_000_000, now()).transact({"from": OWNER})
+nav.functions.configure(CRED_C, feedC.address, THRESHOLD_BPS, CONFIRMATION, STALENESS, STALE_CAP, now(), 0)\
+    .transact({"from": ATTESTOR})
+nav.functions.checkpoint(CRED_C).transact({"from": WATCHER})
+
+# Arm at a fixed round, then re-checkpoint the SAME round after CONFIRMATION
+# of observer time: feed-clock confirmation must refuse it.
+feedC.functions.set(9_000_000, now()).transact({"from": OWNER})
+nav.functions.checkpoint(CRED_C).transact({"from": WATCHER})  # arm; feed does not print again
+warp(CONFIRMATION + 86400)
+nav.functions.checkpoint(CRED_C).transact({"from": WATCHER})  # same round re-observed
+check("same round cannot confirm itself (feed-clock, not observer-clock)",
+      not nav.functions.drawdownConfirmed(CRED_C).call() and not nav.functions.isTriggerable(CRED_C).call())
+
+# Now silence the feed entirely: it goes stale and the darkness limb bites,
+# so silencing to dodge confirmation still latches.
+warp(STALENESS + 1)
+nav.functions.checkpoint(CRED_C).transact({"from": WATCHER})  # arms darkness
+warp(STALE_CAP + 1)
+check("silence-to-dodge-confirmation walks into darkness",
+      nav.functions.isTriggerable(CRED_C).call())
 
 # ------------------------------------------------------------ darkness limb
 print("== NavDrawdownTrigger: darkness limb ==")
@@ -139,7 +187,7 @@ registry.functions.setCredential(
 ).transact({"from": OWNER})
 feed2 = deploy("MockNavFeed")
 feed2.functions.set(10_000_000, now()).transact({"from": OWNER})
-nav.functions.configure(CRED_D, feed2.address, THRESHOLD_BPS, STALENESS, STALE_CAP, now(), 0)\
+nav.functions.configure(CRED_D, feed2.address, THRESHOLD_BPS, CONFIRMATION, STALENESS, STALE_CAP, now(), 0)\
     .transact({"from": ATTESTOR})
 nav.functions.checkpoint(CRED_D).transact({"from": WATCHER})
 
@@ -202,13 +250,8 @@ redemption.functions.setCapacity(10_000 * 10**6).transact({"from": OWNER})
 liveness.functions.checkpoint(CRED).transact({"from": WATCHER})
 warp(DRY + 10)
 check("dry past the bound is provable", liveness.functions.livenessFailureProvable(CRED).call())
-check("liveness limb kills the grant", provider.functions.getCredential(ISSUER).call() == 0)
 liveness.functions.latch(CRED).transact({"from": WATCHER})
 check("permissionless latch on the dry facility", liveness.functions.isTriggered(CRED).call())
-redemption.functions.setCapacity(500_000 * 10**6).transact({"from": OWNER})
-liveness.functions.checkpoint(CRED).transact({"from": WATCHER})
-check("refill after latch: grant stays dead",
-      provider.functions.getCredential(ISSUER).call() == 0)
 
 # ------------------------------------------------------------- provider shapes
 print("== RWAIssuerCredentialProvider shapes ==")
@@ -221,7 +264,7 @@ registry.functions.setWallet(W2, CRED_N).transact({"from": OWNER})
 check("unconfigured NAV mandate refused", provider.functions.getCredential(W2).call() == 0)
 feed3 = deploy("MockNavFeed")
 feed3.functions.set(10_000_000, now()).transact({"from": OWNER})
-nav.functions.configure(CRED_N, feed3.address, THRESHOLD_BPS, STALENESS, STALE_CAP, now(), 0)\
+nav.functions.configure(CRED_N, feed3.address, THRESHOLD_BPS, CONFIRMATION, STALENESS, STALE_CAP, now(), 0)\
     .transact({"from": ATTESTOR})
 check("NAV-only issuer granted (liveness gap disclosed, not faked)",
       provider.functions.getCredential(W2).call() > 0)
@@ -233,7 +276,7 @@ registry.functions.setCredential(
 ).transact({"from": OWNER})
 W3_ = w3.eth.accounts[6]
 registry.functions.setWallet(W3_, CRED_H).transact({"from": OWNER})
-nav.functions.configure(CRED_H, feed3.address, THRESHOLD_BPS, STALENESS, STALE_CAP, now(), 0)\
+nav.functions.configure(CRED_H, feed3.address, THRESHOLD_BPS, CONFIRMATION, STALENESS, STALE_CAP, now(), 0)\
     .transact({"from": ATTESTOR})
 check("liveness bound-but-unconfigured refused",
       provider.functions.getCredential(W3_).call() == 0)

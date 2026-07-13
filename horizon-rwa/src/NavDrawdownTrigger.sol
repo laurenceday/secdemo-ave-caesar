@@ -22,9 +22,12 @@ interface IAggregatorV3Like {
 /// @notice IDisclosureTrigger implementing the class
 ///         keccak256("RWA_NAV_DRAWDOWN_BPS_V1"):
 ///         latches for an RWA issuer credential when EITHER
-///         limb A — NAV per share, read from the pinned feed, is observed at
-///         a drawdown from the checkpointed high-water mark of at least the
-///         threshold (integer basis points of HWM, floor rounding); OR
+///         limb A — NAV per share, read from the pinned feed, breaches a
+///         drawdown from the checkpointed high-water mark of at least the
+///         threshold (integer basis points of HWM, floor rounding) AND the
+///         feed CONFIRMS the breach with a later print at least
+///         `confirmationWindow` seconds after the breach was first observed;
+///         OR
 ///         limb B — the pinned feed goes dark: no fresh update for longer
 ///         than `staleCap`, measured from an in-window observation of
 ///         staleness. A permanently dark valuation feed is itself a
@@ -39,6 +42,26 @@ interface IAggregatorV3Like {
 ///         does not already trust the pinned feed should not accept this
 ///         class.
 ///
+///         CONFIRMATION, NOT INSTANT PERMANENCE: NAV is a reported figure,
+///         and a single misprint should not become a permanent latchable
+///         fact the moment one checkpoint sees it. A threshold breach
+///         therefore ARMS rather than latches, recording the feed round
+///         (`updatedAt`) that armed it. It is confirmed only by a SECOND,
+///         DISTINCT fresh in-window round — `updatedAt` strictly greater
+///         than the arming round and at least `confirmationWindow` seconds
+///         later IN THE FEED'S OWN CLOCK — still at/below the threshold.
+///         Confirmation is thus feed-timestamp-based, not observer-clock
+///         based: a watcher cannot confirm early by waiting, and the same
+///         round re-checkpointed never confirms; the feed itself must print
+///         the breach a second time. A fresh round back above the threshold
+///         before confirmation clears the arm — a corrected misprint or a
+///         genuine recovery never latches. ONCE CONFIRMED the fact is
+///         permanent: recovery, revision, or a new all-time high cannot cure
+///         a confirmed drawdown pre-latch, exactly like the deficit
+///         accumulators in the sibling projects. And the dodge is covered:
+///         an issuer who silences the feed to avoid printing the second
+///         round walks into limb B — darkness — instead.
+///
 ///         FEED PINNING: the binding stores one immutable feed address. For
 ///         Chainlink proxies, pin the UNDERLYING aggregator (proxy
 ///         `aggregator()` at binding time) — a phase rotation or feed
@@ -47,21 +70,17 @@ interface IAggregatorV3Like {
 ///
 ///         MEASUREMENT: drawdown is a ratio, so feed decimals cancel out of
 ///         the predicate entirely; decimals are recorded in binding data for
-///         reference. HWM ratchets upward at in-window checkpoints;
-///         `maxDrawdownBpsObserved` ratchets upward likewise — a NAV print
-///         observed at threshold drawdown is a permanent fact, and a later
-///         recovery (or upward revision) must not cure it pre-latch, exactly
-///         like the deficit accumulators in the sibling projects. Floor
+///         reference. HWM ratchets upward at in-window checkpoints. Floor
 ///         rounding on the bps division biases toward the subject. A dip
 ///         that recovers before ANY checkpoint observes it is missed — the
-///         poke-cadence caveat; NAVLink updates are slow and issuer-driven,
-///         so the observation window is generous, but watchtowers SHOULD
-///         checkpoint on every feed update.
+///         poke-cadence caveat; watchtowers SHOULD checkpoint on every feed
+///         update (arming, confirming, and clearing are all
+///         observation-bound).
 ///
 ///         STALENESS: a checkpoint that finds the feed stale (`updatedAt`
 ///         older than `stalenessBound`, or a non-positive answer) records
-///         nothing toward HWM or drawdown — a stale print is not a
-///         valuation. It arms the darkness clock instead; a fresh
+///         nothing toward HWM, breach, or confirmation — a stale print is
+///         not a valuation. It arms the darkness clock instead; a fresh
 ///         observation clears the clock. Darkness duration is capped at
 ///         `mandateEnd`: a feed that goes dark near expiry can only accrue
 ///         in-window darkness.
@@ -72,18 +91,21 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
     ISealedEntityCredentialRegistry public immutable registry;
 
     struct Mandate {
-        address feed;           // pinned aggregator (NOT a proxy), AggregatorV3 shape
-        uint16 thresholdBps;    // limb-A drawdown threshold, integer bps of HWM
-        uint32 stalenessBound;  // seconds after which a print no longer counts as fresh
-        uint32 staleCap;        // limb-B: darkness longer than this latches
+        address feed;              // pinned aggregator (NOT a proxy), AggregatorV3 shape
+        uint16 thresholdBps;       // limb-A drawdown threshold, integer bps of HWM
+        uint32 confirmationWindow; // min feed-clock seconds between arming round and confirming round
+        uint32 stalenessBound;     // seconds after which a print no longer counts as fresh
+        uint32 staleCap;           // limb-B: darkness longer than this latches
         uint64 mandateStart;
-        uint64 mandateEnd;      // 0 = open-ended
-        uint8 feedDecimals;     // recorded at configure, reference only (bps cancels decimals)
+        uint64 mandateEnd;         // 0 = open-ended
+        uint8 feedDecimals;        // recorded at configure, reference only (bps cancels decimals)
     }
 
     mapping(bytes32 => Mandate) internal _mandates;
     mapping(bytes32 => uint256) public highWaterNav;           // HWM, feed units
-    mapping(bytes32 => uint256) public maxDrawdownBpsObserved; // ratchets up, never cures
+    mapping(bytes32 => uint256) public maxDrawdownBpsObserved; // reporting ratchet
+    mapping(bytes32 => uint256) public armedRoundUpdatedAt;    // arming round's updatedAt (0 = not armed)
+    mapping(bytes32 => bool) public drawdownConfirmed;         // limb A confirmed permanently
     mapping(bytes32 => uint64) public staleSince;              // darkness clock (0 = feed alive)
     mapping(bytes32 => bool) public darknessObserved;          // limb B armed permanently
     mapping(bytes32 => uint64) internal _triggeredAt;
@@ -92,6 +114,7 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
         bytes32 indexed credentialId,
         address indexed feed,
         uint16 thresholdBps,
+        uint32 confirmationWindow,
         uint32 stalenessBound,
         uint32 staleCap,
         uint64 mandateStart,
@@ -100,6 +123,9 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
     event NavCheckpointed(
         bytes32 indexed credentialId, uint256 nav, uint256 highWaterNav, uint256 maxDrawdownBpsObserved
     );
+    event DrawdownBreachArmed(bytes32 indexed credentialId, uint256 drawdownBps, uint256 armedRoundUpdatedAt);
+    event DrawdownBreachCleared(bytes32 indexed credentialId);
+    event DrawdownConfirmed(bytes32 indexed credentialId, uint256 drawdownBps);
     event FeedDarknessArmed(bytes32 indexed credentialId, uint64 staleSince);
 
     error NotAttestor();
@@ -114,14 +140,19 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
 
     // ------------------------------------------------------------- binding
 
-    /// @notice Pin the mandate: feed, drawdown threshold, staleness bound,
-    ///         darkness cap, window. Attestor-only, one-shot. The HWM
-    ///         baselines at the first fresh in-window checkpoint — attestors
-    ///         SHOULD checkpoint immediately after configuring.
+    /// @notice Pin the mandate: feed, drawdown threshold, confirmation
+    ///         window, staleness bound, darkness cap, window. Attestor-only,
+    ///         one-shot. The HWM baselines at the first fresh in-window
+    ///         checkpoint — attestors SHOULD checkpoint immediately after
+    ///         configuring. `confirmationWindow` MAY be zero: confirmation
+    ///         then requires only that the feed prints the breach in a
+    ///         SECOND, distinct round (`updatedAt` strictly greater than the
+    ///         arming round).
     function configure(
         bytes32 credentialId,
         address feed,
         uint16 thresholdBps,
+        uint32 confirmationWindow,
         uint32 stalenessBound,
         uint32 staleCap,
         uint64 mandateStart,
@@ -137,6 +168,7 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
         _mandates[credentialId] = Mandate({
             feed: feed,
             thresholdBps: thresholdBps,
+            confirmationWindow: confirmationWindow,
             stalenessBound: stalenessBound,
             staleCap: staleCap,
             mandateStart: mandateStart,
@@ -144,14 +176,21 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
             feedDecimals: IAggregatorV3Like(feed).decimals()
         });
         emit MandateConfigured(
-            credentialId, feed, thresholdBps, stalenessBound, staleCap, mandateStart, mandateEnd
+            credentialId,
+            feed,
+            thresholdBps,
+            confirmationWindow,
+            stalenessBound,
+            staleCap,
+            mandateStart,
+            mandateEnd
         );
     }
 
     // ---------------------------------------------------------- checkpoint
 
-    /// @notice Permissionless. Fresh in-window print: ratchet HWM up, ratchet
-    ///         max observed drawdown up, clear the darkness clock. Stale
+    /// @notice Permissionless. Fresh in-window print: ratchet HWM, arm /
+    ///         confirm / clear the breach, clear the darkness clock. Stale
     ///         print: record nothing toward valuation, arm the darkness
     ///         clock, and set the permanent limb-B fact once in-window
     ///         darkness exceeds the cap. Out-of-window checkpoints observe
@@ -164,7 +203,7 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
 
     function _checkpoint(bytes32 credentialId) internal {
         Mandate storage m = _mandates[credentialId];
-        (bool fresh, uint256 nav) = _read(m);
+        (bool fresh, uint256 nav, uint256 updatedAt) = _read(m);
 
         if (!fresh) {
             uint64 since = staleSince[credentialId];
@@ -184,22 +223,60 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
         if (!_inWindow(m)) return;
 
         uint256 hwm = highWaterNav[credentialId];
+        uint256 dd;
         if (nav > hwm) {
             highWaterNav[credentialId] = nav;
             hwm = nav;
         } else if (hwm != 0) {
-            uint256 dd = ((hwm - nav) * BPS) / hwm; // floor: biases toward the subject
+            dd = ((hwm - nav) * BPS) / hwm; // floor: biases toward the subject
             if (dd > maxDrawdownBpsObserved[credentialId]) {
                 maxDrawdownBpsObserved[credentialId] = dd;
             }
         }
         emit NavCheckpointed(credentialId, nav, hwm, maxDrawdownBpsObserved[credentialId]);
+
+        if (dd >= m.thresholdBps) {
+            uint256 armedRound = armedRoundUpdatedAt[credentialId];
+            if (armedRound == 0) {
+                armedRoundUpdatedAt[credentialId] = updatedAt;
+                emit DrawdownBreachArmed(credentialId, dd, updatedAt);
+            } else if (
+                !drawdownConfirmed[credentialId]
+                    && _confirms(m.confirmationWindow, armedRound, updatedAt)
+            ) {
+                drawdownConfirmed[credentialId] = true;
+                emit DrawdownConfirmed(credentialId, dd);
+            }
+        } else if (armedRoundUpdatedAt[credentialId] != 0 && !drawdownConfirmed[credentialId]) {
+            // A fresh round back above the threshold before confirmation: a
+            // corrected misprint or a genuine recovery. The arm clears.
+            armedRoundUpdatedAt[credentialId] = 0;
+            emit DrawdownBreachCleared(credentialId);
+        }
     }
 
-    function _read(Mandate storage m) internal view returns (bool fresh, uint256 nav) {
-        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3Like(m.feed).latestRoundData();
-        if (answer <= 0 || updatedAt + m.stalenessBound < block.timestamp) return (false, 0);
-        return (true, uint256(answer));
+    /// @dev A round confirms an armed breach iff it is a STRICTLY LATER feed
+    ///      round than the arming round (the feed printed the breach twice)
+    ///      and the two rounds are at least `confirmationWindow` apart in the
+    ///      feed's own clock. When `confirmationWindow` is zero this reduces
+    ///      to "a distinct later round".
+    function _confirms(uint32 confirmationWindow, uint256 armedRound, uint256 updatedAt)
+        internal
+        pure
+        returns (bool)
+    {
+        return updatedAt > armedRound && updatedAt - armedRound >= confirmationWindow;
+    }
+
+    function _read(Mandate storage m)
+        internal
+        view
+        returns (bool fresh, uint256 nav, uint256 updatedAt)
+    {
+        int256 answer;
+        (, answer,, updatedAt,) = IAggregatorV3Like(m.feed).latestRoundData();
+        if (answer <= 0 || updatedAt + m.stalenessBound < block.timestamp) return (false, 0, updatedAt);
+        return (true, uint256(answer), updatedAt);
     }
 
     function _inWindow(Mandate storage m) internal view returns (bool) {
@@ -217,19 +294,37 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
 
     // ------------------------------------------------------------ predicate
 
-    /// @notice Live drawdown provable right now: the recorded maximum, or the
-    ///         current fresh in-window print against the stored HWM.
+    /// @notice Reporting view: the recorded maximum drawdown, or the current
+    ///         fresh in-window print against the stored HWM if larger.
     function projectedDrawdownBps(bytes32 credentialId) public view returns (uint256 dd) {
         Mandate storage m = _mandates[credentialId];
         dd = maxDrawdownBpsObserved[credentialId];
         if (m.feed == address(0) || !_inWindow(m)) return dd;
         uint256 hwm = highWaterNav[credentialId];
         if (hwm == 0) return dd;
-        (bool fresh, uint256 nav) = _read(m);
+        (bool fresh, uint256 nav,) = _read(m);
         if (fresh && nav < hwm) {
             uint256 live = ((hwm - nav) * BPS) / hwm;
             if (live > dd) dd = live;
         }
+    }
+
+    /// @notice Limb-A projection: a confirmed breach, or an armed breach that
+    ///         the live round confirms right now (fresh, in-window, a
+    ///         strictly later round at least `confirmationWindow` past the
+    ///         arming round, still at/below threshold). An unarmed or cleared
+    ///         breach is never provable — arming is observation-bound.
+    function drawdownProvable(bytes32 credentialId) public view returns (bool) {
+        if (drawdownConfirmed[credentialId]) return true;
+        Mandate storage m = _mandates[credentialId];
+        uint256 armedRound = armedRoundUpdatedAt[credentialId];
+        if (m.feed == address(0) || armedRound == 0 || !_inWindow(m)) return false;
+        uint256 hwm = highWaterNav[credentialId];
+        if (hwm == 0) return false;
+        (bool fresh, uint256 nav, uint256 updatedAt) = _read(m);
+        if (!fresh || nav >= hwm) return false;
+        if (((hwm - nav) * BPS) / hwm < m.thresholdBps) return false;
+        return _confirms(m.confirmationWindow, armedRound, updatedAt);
     }
 
     /// @notice Limb-B projection: recorded darkness, or an armed clock whose
@@ -240,7 +335,7 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
         Mandate storage m = _mandates[credentialId];
         uint64 since = staleSince[credentialId];
         if (m.feed == address(0) || since == 0) return false;
-        (bool fresh,) = _read(m);
+        (bool fresh,,) = _read(m);
         return !fresh && _darkPastCap(m, since);
     }
 
@@ -254,8 +349,8 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
 
     /// @notice Immutable binding data, ITriggerClass-shape: chain id, pinned
     ///         feed + its decimals (reference), threshold in integer bps
-    ///         (floor rounding), staleness bounds in seconds, window in unix
-    ///         seconds.
+    ///         (floor rounding), confirmation window and staleness bounds in
+    ///         seconds, window in unix seconds.
     function binding(bytes32 credentialId) external view returns (bytes memory) {
         Mandate storage m = _mandates[credentialId];
         return abi.encode(
@@ -263,6 +358,7 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
             m.feed,
             m.feedDecimals,
             m.thresholdBps,
+            m.confirmationWindow,
             m.stalenessBound,
             m.staleCap,
             m.mandateStart,
@@ -275,9 +371,8 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
     /// @inheritdoc IDisclosureTrigger
     function isTriggerable(bytes32 credentialId) public view returns (bool) {
         if (_triggeredAt[credentialId] != 0) return false;
-        Mandate storage m = _mandates[credentialId];
-        if (m.feed == address(0)) return false;
-        if (projectedDrawdownBps(credentialId) >= m.thresholdBps) return true;
+        if (_mandates[credentialId].feed == address(0)) return false;
+        if (drawdownProvable(credentialId)) return true;
         return darknessProvable(credentialId);
     }
 
@@ -293,7 +388,8 @@ contract NavDrawdownTrigger is IDisclosureTrigger {
 
     /// @inheritdoc IDisclosureTrigger
     /// @dev Latch materialises: it runs a checkpoint first, so a single
-    ///      permissionless call records the observation it latches on.
+    ///      permissionless call records the confirming (or darkness)
+    ///      observation it latches on.
     function latch(bytes32 credentialId) external {
         if (!isTriggerable(credentialId)) revert NotTriggerable();
         _checkpoint(credentialId);

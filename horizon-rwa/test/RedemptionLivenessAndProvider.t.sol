@@ -18,6 +18,7 @@ contract RedemptionLivenessAndProviderTest is Test {
     uint256 constant FLOOR = 100_000e6;
     uint32 constant DRY_DURATION = 7 days;
     uint32 constant PAUSE_CAP = 30 days;
+    uint32 constant CONFIRMATION = 1 hours;
 
     bytes32 constant CRED = keccak256("rwa-issuer-credential");
     address constant ATTESTOR = address(0xA77E5);
@@ -60,7 +61,7 @@ contract RedemptionLivenessAndProviderTest is Test {
         feed.set(11_144_444, block.timestamp);
         redemption.setCapacity(394_617e6);
         vm.startPrank(ATTESTOR);
-        nav.configure(CRED, address(feed), 500, 2 days, 10 days, issuedAt, 0);
+        nav.configure(CRED, address(feed), 500, CONFIRMATION, 2 days, 10 days, issuedAt, 0);
         liveness.configure(CRED, address(redemption), FLOOR, DRY_DURATION, PAUSE_CAP, issuedAt, 0);
         vm.stopPrank();
         nav.checkpoint(CRED);
@@ -215,7 +216,7 @@ contract RedemptionLivenessAndProviderTest is Test {
 
         assertEq(provider.getCredential(w), 0, "unconfigured NAV mandate refused");
         vm.prank(ATTESTOR);
-        nav.configure(navOnly, address(feed), 500, 2 days, 10 days, issuedAt, 0);
+        nav.configure(navOnly, address(feed), 500, CONFIRMATION, 2 days, 10 days, issuedAt, 0);
         assertGt(provider.getCredential(w), 0, "NAV-only issuer granted");
     }
 
@@ -233,23 +234,35 @@ contract RedemptionLivenessAndProviderTest is Test {
         address w = address(0xBEEF);
         registry.setWallet(w, half);
         vm.prank(ATTESTOR);
-        nav.configure(half, address(feed), 500, 2 days, 10 days, issuedAt, 0);
+        nav.configure(half, address(feed), 500, CONFIRMATION, 2 days, 10 days, issuedAt, 0);
 
         assertEq(provider.getCredential(w), 0, "bound-but-toothless liveness refused");
     }
 
-    function test_provider_eitherLimbKillsTheGrant() public {
-        // NAV drawdown past threshold: grant dies while merely latchable.
-        feed.set(10_000_000, block.timestamp); // -10.27% from 11.144444 HWM
-        assertEq(provider.getCredential(ISSUER_WALLET), 0, "NAV limb kills grant");
-        feed.set(11_144_444, block.timestamp);
-        assertGt(provider.getCredential(ISSUER_WALLET), 0, "recovers pre-checkpoint");
+    function test_provider_navLimbKillsTheGrant() public {
+        // Arm a breach (a single checkpoint does not kill the grant), then
+        // bring the confirming round live: the grant dies via projection
+        // before any confirming checkpoint.
+        feed.set(10_000_000, block.timestamp); // ~-10.3% from 11.144444 HWM
+        nav.checkpoint(CRED); // arm
+        assertGt(provider.getCredential(ISSUER_WALLET), 0, "armed-only: still granted");
 
-        // Liveness failure: grant dies too.
+        vm.warp(block.timestamp + CONFIRMATION);
+        feed.set(10_000_000, block.timestamp); // confirming round is live
+        assertEq(provider.getCredential(ISSUER_WALLET), 0, "NAV limb kills grant on confirmation");
+
+        // Corrected before any confirming checkpoint recorded it: grant back.
+        feed.set(11_144_444, block.timestamp);
+        nav.checkpoint(CRED); // clears the arm
+        assertGt(provider.getCredential(ISSUER_WALLET), 0, "recovery restores the grant");
+    }
+
+    function test_provider_livenessLimbKillsTheGrant() public {
+        feed.set(11_144_444, block.timestamp); // NAV healthy and fresh throughout
         redemption.setCapacity(10_000e6);
         liveness.checkpoint(CRED);
         vm.warp(block.timestamp + DRY_DURATION + 1);
-        feed.set(11_144_444, block.timestamp); // keep NAV fresh
+        feed.set(11_144_444, block.timestamp); // keep NAV fresh across the warp
         assertEq(provider.getCredential(ISSUER_WALLET), 0, "liveness limb kills grant");
 
         // Latch it: dead forever, even after the facility refills.
