@@ -4,13 +4,15 @@ on:
   push:
   pull_request:
 
-defaults:
-  run:
-    working-directory: aave-v3-kelp
-
 jobs:
   forge:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [aave-v3-kelp, aave-v4-spoke]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1
@@ -23,6 +25,9 @@ jobs:
     # April-May 2026 state; blocks are pinned in the fork test.
     if: ${{ vars.RUN_FORK_TESTS == 'true' }}
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aave-v3-kelp
     steps:
       - uses: actions/checkout@v4
       - uses: foundry-rs/foundry-toolchain@v1

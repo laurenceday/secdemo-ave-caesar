@@ -48,8 +48,8 @@ if (fatal) {
 
 // Emit artifacts for the runtime harness.
 const want = [
-  'AaveV3DeficitTrigger', 'RiskProviderCredentialProvider',
-  'MockSealedRegistry', 'MockLatchTrigger', 'MockAaveV3Pool',
+  'AaveV4SpokeTrigger', 'SpokeOperatorCredentialProvider', 'SpokeAllocator',
+  'MockSealedRegistry', 'MockLatchTrigger', 'MockAaveV4Hub', 'MockERC20',
 ];
 const artifacts = {};
 let testContracts = 0;

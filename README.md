@@ -14,7 +14,7 @@ Those about to risk-manage salute you.
 | Directory | Subject | Trigger family | Status |
 | --- | --- | --- | --- |
 | [`aave-v3-kelp/`](./aave-v3-kelp/) | Risk service provider under a DAO reserve mandate | Realised loss: gross protocol deficit (Aave v3.3 native counter), incl. the Kelp rsETH backtest against real mainnet history | **Built + verified** |
-| `aave-v4-spoke/` | Spoke operator (hub→spoke credit lines) | Realised loss + hub-side sanction; consumer freezes new exposure only | Planned |
+| [`aave-v4-spoke/`](./aave-v4-spoke/) | Spoke operator (hub→spoke credit lines) | Realised loss (per-spoke deficit) + guarded hub-sanction limb; consumer freezes new exposure only; incl. the spec-mandated [V4 codebase read](./aave-v4-spoke/docs/V4-READ.md) | **Built + verified** |
 | `horizon-rwa/` | RWA token issuer | Redemption liveness + NAV drawdown (NAVLink-pinned) | Planned |
 
 Each demo directory is a self-contained Foundry project (vendored
